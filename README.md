@@ -134,14 +134,14 @@ Feature Builder (cyclical encoding + lag extraction)
 
 | # | File | Size | Contents | Loaded by SUMO |
 |---|------|------|----------|----------------|
-| 1 | `weather.add.xml` | 0.3 KB | temperature_c, wind_speed_kmh, rainfall, visibility, road_condition | ✅ Yes |
-| 2 | `environment.xml` | 0.6 KB | location (lat/lon/elev), bounding box (1km²), solar data | ❌ Metadata |
-| 3 | `vehicle_types.add.xml` | 0.5 KB | altitude-aware vTypes (car/truck/emergency), decel factor | ✅ Yes |
-| 4 | `traffic_lights.add.xml` | 0.8 KB | TLS weather adjustment sidecar (BluFleet metadata) | ❌ Sidecar |
-| 5 | `routes.rou.xml` | ~57 KB | ~200 trips via randomTrips.py, 600s simulation window | ✅ Yes |
-| 6 | `network.net.xml` | ~2.5 MB | OSM network built by netconvert with z = elevation_m | ✅ Yes |
-| 7 | `scenario.sumocfg` | 1.4 KB | Master config: net + routes + additional-files, step=0.1 | ✅ Entry point |
-| 8 | `scenario_config.xml` | 1.2 KB | BluFleet manifest: all data sources + generated files | ❌ Metadata |
+| 1 | `weather.add.xml` | 0.3 KB | temperature_c, wind_speed_kmh, rainfall, visibility, road_condition | Yes |
+| 2 | `environment.xml` | 0.6 KB | location (lat/lon/elev), bounding box (1km²), solar data | Metadata |
+| 3 | `vehicle_types.add.xml` | 0.5 KB | altitude-aware vTypes (car/truck/emergency), decel factor | Yes |
+| 4 | `traffic_lights.add.xml` | 0.8 KB | TLS weather adjustment sidecar (BluFleet metadata) | Sidecar |
+| 5 | `routes.rou.xml` | ~57 KB | ~200 trips via randomTrips.py, 600s simulation window | Yes |
+| 6 | `network.net.xml` | ~2.5 MB | OSM network built by netconvert with z = elevation_m | Yes |
+| 7 | `scenario.sumocfg` | 1.4 KB | Master config: net + routes + additional-files, step=0.1 | Entry point |
+| 8 | `scenario_config.xml` | 1.2 KB | BluFleet manifest: all data sources + generated files | Metadata |
 
 #### Network Building (subprocess)
 
@@ -323,9 +323,9 @@ Returns detailed information about all loaded ML models.
 
 | API | Purpose | Key Required |
 |-----|---------|-------------|
-| [Open-Meteo](https://open-meteo.com) | Weather forecast & historical data | ❌ Free |
-| [Open-Elevation](https://open-elevation.com) | Terrain altitude | ❌ Free |
-| [Overpass (OSM)](https://overpass-api.de) | Road network context | ❌ Free |
+| [Open-Meteo](https://open-meteo.com) | Weather forecast & historical data | Free |
+| [Open-Elevation](https://open-elevation.com) | Terrain altitude | Free |
+| [Overpass (OSM)](https://overpass-api.de) | Road network context | Free |
 
 ---
 
