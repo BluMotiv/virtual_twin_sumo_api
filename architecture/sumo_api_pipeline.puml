@@ -1,0 +1,192 @@
+@startuml BluFleet_SUMO_API_Pipeline
+!theme cerulean-outline
+skinparam backgroundColor #FEFEFE
+skinparam defaultFontSize 11
+skinparam packageStyle rectangle
+skinparam componentStyle rectangle
+skinparam noteFontSize 10
+skinparam legendFontSize 10
+
+title **BluFleet AI -- SUMO Scenario Generation Pipeline**\n//Complete data flow: User input to Open-Source APIs to ML Models to SUMO Environment//
+
+legend right
+  |= Colour |= Meaning |
+  |<#E3F2FD>| User Input |
+  |<#E8F5E9>| Open-Source API (external) |
+  |<#FFF3E0>| Internal Computation |
+  |<#F3E5F5>| ML Models (XGBoost / LightGBM) |
+  |<#FFEBEE>| SUMO Output Files |
+  |<#FFFDE7>| External Tool (subprocess) |
+endlegend
+
+' ============================================================
+' 1. USER INPUT
+' ============================================================
+package "1. User Input" <<Rectangle>> #E3F2FD {
+    component [**POST /generate-scenario**\n---\nlatitude : float  (decimal deg)\nlongitude : float (decimal deg)\ndate : str  (YYYY-MM-DD)\ntime : str  (HH:MM)] as REQ
+}
+
+' ============================================================
+' 2. OPEN-SOURCE DATA FETCHING
+' ============================================================
+package "2. Open-Source Data Fetched" <<Rectangle>> #E8F5E9 {
+
+    package "Open-Elevation API" #E8F5E9 {
+        component [**GET /api/v1/lookup**\napi.open-elevation.com\n?locations=lat,lon\n---\n**Response (JSON):**\nresults : elevation : float\n---\n**Output:** elevation_m = 909.0] as ELEV_API
+        note bottom of ELEV_API
+            1 variable extracted:
+            **elevation_m** (metres ASL)
+            Used for: z-offset in netconvert,
+            vehicle decel factor, environment XML
+        end note
+    }
+
+    package "Overpass / OpenStreetMap" #E8F5E9 {
+        component [**Road Context (point query)**\n---\nOverpass QL: way(around:200,lat,lon)\noverpass-api.de\n---\n**Response (JSON):** elements\n---\n**Extracted (7 vars):**\n road_type (secondary, primary)\n road_surface (concrete, asphalt)\n speed_limit (int, km/h)\n lanes (int), road_name (str)\n has_traffic_lights (bool)\n road_count (int)] as OSM_CTX
+
+        component [**Network Download (bbox query)**\n---\nOverpass QL:\n  way(bbox); node(bbox);\nout body; out skel qt;\n---\n**Response:** Raw OSM XML\n**File:** network.osm (~257 KB)] as OSM_DL
+    }
+
+    package "Open-Meteo" #E8F5E9 {
+        component [**Forecast API** (7 days max)\napi.open-meteo.com\n---\nGET /v1/forecast?hourly=16vars\n---\n**16 hourly variables:**\ntemperature_2m, humidity_2m,\nprecipitation, rain, snowfall,\nsnow_depth, weather_code,\nsurface_pressure, cloud_cover,\nwind_speed_10m, wind_dir_10m,\nvisibility, is_day,\nshortwave_radiation,\ndirect_normal_irradiance\n---\n**Response:** JSON (hourly arrays)] as FORECAST
+
+        component [**Archive API** (historical lags)\narchive-api.open-meteo.com\n---\nGET /v1/archive\nend = min(target-1, yesterday)\nstart = end - 30 days\n---\n**Same 16 hourly variables**\n---\n**Aggregated into lag features:**\n temps : 30-day daily means\n precip : 14-day daily totals\n wind : 24h hourly speeds\n sunload : 24h hourly radiation\n wind_dir : last known direction] as ARCHIVE
+    }
+}
+
+' ============================================================
+' 3. INTERNAL COMPUTATION
+' ============================================================
+package "3. Internal Computation" <<Rectangle>> #FFF3E0 {
+    component [**compute_bbox(lat, lon)**\n---\ndelta_lat = 500 / 111320\ndelta_lon = 500 / (111320 * cos(lat))\n---\n**Output:** south, west, north, east\n1 km x 1 km bounding box] as BBOX
+
+    component [**Astronomical Sun Model**\n//sun_service.py//\n---\nSolar declination (Spencer 1971)\nSolar elevation angle\nHour angle from solar noon\n---\n**Output:**\n shortwave_radiation_wm2\n sun_load_factor (0 to 1)\n solar_elevation_deg\n is_day (bool)] as SUN
+
+    component [**Feature Builder**\n//feature_builder.py//\n---\nCyclical encoding:\n  sin/cos(DOY/365.25)\n  sin/cos(hour/24)\n  sin/cos(month/12)\n  sin/cos(wind_dir)\n---\nLag extraction from\nhistorical arrays] as FEAT
+
+    component [**Road Condition Logic**\n---\nprecip_class to road_condition:\n  0 = dry\n  1 = wet\n  2 = wet\n  3 = flooded\n---\nweather_condition default:\n  clear_sky] as ROAD_LOGIC
+}
+
+' ============================================================
+' 4. ML MODELS
+' ============================================================
+package "4. ML Models" <<Rectangle>> #F3E5F5 {
+
+    component [**Temperature Model**\n//XGBoost Regressor//\n---\n**7 Input Features:**\n1 DOY_SIN  sin(day_of_year/365.25)\n2 DOY_COS  cos(day_of_year/365.25)\n3 T2M_LAG_1  yesterday mean temp\n4 T2M_LAG_7  7-day ago mean temp\n5 T2M_LAG_30  30-day ago mean temp\n6 LAT  latitude\n7 LON  longitude\n---\n**Output:** temperature_c (deg C)] as ML_TEMP
+
+    component [**Wind Speed Model**\n//XGBoost, location-specific, P10/P50/P90//\n---\n**13 Input Features:**\n1 latitude  2 longitude\n3 hour_sin  4 hour_cos\n5 month_sin 6 month_cos\n7 dayofweek 8 dayofyear\n9 wind_dir_sin 10 wind_dir_cos\n11 wind_lag_1h\n12 wind_mean_3h\n13 wind_max_24h\n---\n**Output:** wind_speed_kmh] as ML_WIND
+
+    component [**Sunload Model**\n//XGBoost, location-specific, P10/P50/P90//\n---\n**11 Input Features:**\n1 latitude  2 longitude\n3 hour_sin  4 hour_cos\n5 month_sin 6 month_cos\n7 dayofweek 8 dayofyear\n9 sunload_lag_1h\n10 sunload_mean_3h\n11 sunload_max_24h\n---\n**Output:** solar_radiation_wm2] as ML_SUN
+
+    component [**Precipitation Model**\n//XGBoost Classifier, location-specific//\n---\n**16 Input Features:**\n1 YEAR 2 MO 3 DY\n4 T2M (from Temperature model)\n5 WS2M (from Wind model)\n6 ALLSKY_SFC_SW_DWN (Sunload model)\n7 lag_1 8 lag_3 9 lag_7 10 lag_14\n11 roll_sum_7 12 roll_sum_14\n13 month 14 dayofyear\n15 latitude 16 longitude\n---\n**Output:** precipitation_class (0-3)\n0=No Rain, 1=Low, 2=Mod, 3=High] as ML_PRECIP
+}
+
+' ============================================================
+' 5. NETWORK BUILDING
+' ============================================================
+package "5. SUMO Network Building" <<Rectangle>> #FFFDE7 {
+    component [**netconvert** (subprocess)\n/opt/homebrew/bin/netconvert\n---\n--osm-files network.osm\n--output-file network.net.xml\n--geometry.remove\n--ramps.guess\n--junctions.join\n--tls.guess-signals\n--tls.default-type actuated\n**--offset.z (elevation_m)**\n---\n**Input:** network.osm (raw OSM XML)\n**Output:** network.net.xml (~2.5 MB)] as NETCONV
+
+    component [**randomTrips.py** (subprocess)\n/opt/homebrew/share/sumo/tools/\n---\n--net-file network.net.xml\n-b 0 -e 600 --period 3\n--validate --min-distance 200\n---\n**Output:** routes.rou.xml (~57 KB)] as TRIPS
+}
+
+' ============================================================
+' 6. SUMO XML OUTPUT FILES
+' ============================================================
+package "6. Generated SUMO Files (8 total)" <<Rectangle>> #FFEBEE {
+    component [**1 weather.add.xml** (0.3 KB)\nweather element with:\n  temperature_c, wind_speed_kmh,\n  rainfall_mm_1h, visibility_m,\n  road_condition, weather_condition] as F_WEATHER
+
+    component [**2 environment.xml** (0.6 KB)\nenvironmentData with:\n  location: lat, lon, elevation_m\n  boundingBox: south, west, north, east\n    width_m=1000 height_m=1000\n  environmental: temperature_c,\n    solar_radiation_wm2, sun_load_factor] as F_ENV
+
+    component [**3 vehicle_types.add.xml** (0.5 KB)\nvType: weather_adjusted car/truck/emerg\n  accel, decel x altitude_factor, sigma\n  param elevation_m = 909\n---\nAltitude decel factor:\n  above 2000m = 0.85\n  above 1000m = 0.93\n  else = 1.0] as F_VTYPE
+
+    component [**4 traffic_lights.add.xml** (0.8 KB)\ntlsWeatherAdjustment (sidecar)\n  //NOT loaded by SUMO//\n  conditions: road_condition, visibility\n  adjustments: extra_all_red_s\n  recommendedPhases: name, dur, state] as F_TLS
+
+    component [**5 routes.rou.xml** (57 KB)\nroutes with ~200 trips\n  trip: id, depart, from_edge, to_edge\n  simulation window: 600s] as F_ROUTES
+
+    component [**6 network.net.xml** (2.5 MB)\n//Built by netconvert//\nAll nodes carry z = elevation_m\nReal road topology from OSM] as F_NET
+
+    component [**7 scenario.sumocfg** (1.4 KB)\nconfiguration:\n  net-file: network.net.xml\n  route-files: routes.rou.xml\n  additional-files:\n    weather.add.xml,\n    vehicle_types.add.xml\n  time: begin=0, end=600, step=0.1] as F_CFG
+
+    component [**8 scenario_config.xml** (1.2 KB)\nscenarioManifest (v2.0):\n  metadata: lat, lon, elevation_m,\n    bbox_km=1x1\n  dataSources: open-meteo,\n    open-elevation, overpass-osm,\n    astronomical-model\n  generatedFiles: all 8 listed] as F_MANIFEST
+}
+
+' ============================================================
+' 7. LAUNCH
+' ============================================================
+package "7. Output" <<Rectangle>> #E3F2FD {
+    component [**sumo-gui -c scenario.sumocfg**\n---\nOS-detected auto-launch:\n  macOS: /opt/homebrew/bin/sumo-gui\n  Linux: /usr/bin/sumo-gui] as LAUNCH
+}
+
+' ============================================================
+' DATA FLOW ARROWS
+' ============================================================
+
+' User input to services
+REQ --> ELEV_API : lat, lon
+REQ --> OSM_CTX : lat, lon
+REQ --> BBOX : lat, lon
+REQ --> FORECAST : lat, lon
+REQ --> ARCHIVE : lat, lon
+
+' Elevation to downstream
+ELEV_API --> NETCONV : elevation_m\n(z-offset)
+ELEV_API --> F_ENV : elevation_m
+ELEV_API --> F_VTYPE : altitude_factor
+
+' OSM to network
+BBOX --> OSM_DL : south,west,\nnorth,east
+OSM_DL --> NETCONV : network.osm\n(raw XML)
+NETCONV --> F_NET : network.net.xml
+F_NET --> TRIPS : net-file input
+TRIPS --> F_ROUTES : routes.rou.xml
+
+' OSM context to env
+OSM_CTX --> F_ENV : road context
+
+' Weather to feature builder
+FORECAST -[#2E7D32]-> FEAT : 16 hourly vars
+ARCHIVE -[#2E7D32]-> FEAT : 30-day lags
+
+' Feature builder to ML models
+FEAT --> ML_TEMP : 7 features
+FEAT --> ML_WIND : 13 features
+FEAT --> ML_SUN : 11 features
+
+' ML chaining: temp/wind/sun to precip
+ML_TEMP -[#7B1FA2]-> ML_PRECIP : T2M
+ML_WIND -[#7B1FA2]-> ML_PRECIP : WS2M
+ML_SUN -[#7B1FA2]-> ML_PRECIP : ALLSKY_SFC_SW_DWN
+FEAT --> ML_PRECIP : 10 lag + cal
+
+' Sun service
+REQ --> SUN : lat, lon, datetime
+SUN --> F_ENV : sun_load_factor,\nis_day
+
+' ML to output files
+ML_TEMP --> F_WEATHER : temperature_c
+ML_WIND --> F_WEATHER : wind_speed_kmh
+ML_SUN --> F_WEATHER : solar_radiation_wm2
+ML_PRECIP --> ROAD_LOGIC : precip_class
+ROAD_LOGIC --> F_WEATHER : road_condition
+ML_TEMP -[hidden]-> ML_WIND
+ML_WIND -[hidden]-> ML_SUN
+ML_SUN -[hidden]-> ML_PRECIP
+
+' Files to sumocfg to launch
+F_NET --> F_CFG
+F_ROUTES --> F_CFG
+F_WEATHER --> F_CFG : additional-file
+F_VTYPE --> F_CFG : additional-file
+F_CFG --> LAUNCH : sumo-gui -c
+
+' Manifest
+F_WEATHER --> F_MANIFEST
+F_ENV --> F_MANIFEST
+F_VTYPE --> F_MANIFEST
+F_TLS --> F_MANIFEST
+F_ROUTES --> F_MANIFEST
+F_NET --> F_MANIFEST
+F_CFG --> F_MANIFEST
+
+@enduml
