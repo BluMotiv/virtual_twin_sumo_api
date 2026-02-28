@@ -238,6 +238,14 @@ Returns detailed information about all loaded ML models.
 
 ---
 
+## Output
+<img width="700" height="717" alt="Screenshot 2026-03-01 at 4 21 56 AM" src="https://github.com/user-attachments/assets/1192fb40-36a0-4de1-82a0-8bde44206298" />
+
+<img width="838" height="670" alt="Screenshot 2026-03-01 at 4 22 23 AM" src="https://github.com/user-attachments/assets/fc119772-dc83-498e-848e-013d8337c2f7" />
+
+
+---
+
 ## Intelligence Features
 
 - **Automatic forecast vs ML routing** — decides based on date delta
